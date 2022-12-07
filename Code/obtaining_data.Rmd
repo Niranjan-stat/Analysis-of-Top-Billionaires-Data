@@ -1,0 +1,400 @@
+---
+title: "Obtaining and Preprocessing"
+author: "Group 12"
+date: "2022-10-10"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+```
+
+## Problems encountered During Scraping
+
+1. The headings in the data of different years was different.
+2. The data scraped of 2011 to 2018 had two junk rows at the start of the extracted tibbles.
+3. Age of billionaires was not given in the data of 2019 and 2021
+4. The source of wealth was not categorized in tables of 2011 to 2018, i.e. there were names of companies, etc.
+
+
+## Data Scraping from Areppim
+
+The following code snippet is used to extract raw data:
+
+``` {r}
+# Loading required libraries
+library(rvest)
+library(tidyverse)
+
+# List containing all tables
+tables <- list()
+
+# Extracting the data and adding to tables
+for (i in c(11:19, 21)){
+    url <- paste("https://stats.areppim.com/listes/list_billionairesx", i, "xwor.htm", sep = "")
+    html = read_html(url)
+    tab = html %>% html_table()
+    tab <- tab[[1]][1:502, ]
+    tables[[as.numeric(paste("20", i, sep = ""))]] <- tab
+    cat("Done:", url, "\n")
+}
+
+# Getting the 500 required rows
+for (i in c(2019, 2021)){
+    tables[[i]] <- tables[[i]][1:500, ]
+}
+
+# Extracting the required rows along the first two trash rows
+for (i in 2011:2018){
+    tables[[i]] <- tables[[i]][1:502, ]
+}
+```
+
+
+### Changing Column Headings
+
+The column headings are changed so that tibbles of all years have the same
+headings:
+
+``` {r}
+# Setting the correct heading names in the 2011 to 2018 data
+for (i in c(2011:2018)){
+    names(tables[[i]]) <- tables[[i]][2, ]
+    tables[[i]] <- tables[[i]][3:502, ]
+}
+
+# Setting the headings of the data
+tables[[2019]] <- tables[[2019]] %>%
+    select(
+        `Name` = `Name`,
+        `Net Worth ($US billion)` = `Total net worth($US Billion)`,
+        `Source of Wealth` = `Industry`,
+        `Citizenship` = `Country`
+    )
+
+tables[[2021]] <- tables[[2021]] %>%
+    select(
+        `Name` = `Name`,
+        `Net Worth ($US billion)` = `Total net worth$Billion`,
+        `Source of Wealth` = `Industry`,
+        `Citizenship` = `Country`
+    )
+
+for (i in 2011:2012){
+    tables[[i]] <- tables[[i]] %>%
+        select(
+            `Name` = `Name`,
+            `Age` = `Age`,
+            `Net Worth (in billion $US)` = `Net Worth(bil US$)`,
+            `Source of Wealth` = `Source of Wealth`,
+            `Citizenship` = `Citizenship`
+        )
+}
+
+for (i in 2013:2018){
+    tables[[i]] <- tables[[i]] %>%
+        select(
+            `Name` = `Name`,
+            `Age` = `Age`,
+            `Net Worth (in billion $US)` = `Net Worth($US billion)`,
+            `Source of Wealth` = `Source of Wealth`,
+            `Citizenship` = `Citizenship`
+        )
+}
+
+
+# Reset row names
+for (i in c(2011:2019, 2021)){
+    row.names(tables[[i]]) <- 1:500
+}
+```
+
+
+### Scraping Ages from Wikipedia
+
+The ages of billionaires in the 2019 and 2021 data is updated by scraping
+Wikipedia pages of all billionaires using their names:
+
+``` {r, message = FALSE}
+# Function to get age from the Born row of the information table on Wikipedia
+getAgeFromBorn <- function(name){
+    wiki_url <- paste("https://en.wikipedia.org/wiki/", gsub(" ", "_", name), sep = "")
+    
+    age <- tryCatch({
+        age_text <- read_html(wiki_url) %>%
+            html_elements(".noprint.ForceAgeToShow") %>%
+            html_text() %>%
+            substring(7, 8)
+        age <- as.integer(age_text)
+    }, error = function(e){
+        message(cat("Failed for", name))
+        return(NA_integer_)
+    })
+    
+    message(cat(name, ": ", age, sep = ""))
+    return(age)
+}
+
+# Function to get age from the Died row of the information table on Wikipedia
+getAgeFromDied <- function(name){
+    wiki_url <- paste("https://en.wikipedia.org/wiki/", gsub(" ", "_", name), sep = "")
+    
+    age <- tryCatch({
+        name_table <- read_html(wiki_url) %>%
+            html_table()
+        name_table <- name_table[[1]]
+        
+        age_row <- name_table[name_table[1] == "Died",]
+        age_text <- read_html(wiki_url) %>%
+            as.character(age_row[1,2]) %>%
+            str_extract("aged[:space:]+[:digit:]{1,3}") %>%
+            str_extract("[:digit:]{1,3}")
+        age <- as.integer(age_text)
+    }, error = function(e){
+        message(cat("Failed for", name))
+        return(NA_integer_)
+    })
+    
+    message(cat(name, ": ", age, sep = ""))
+    return(age)
+}
+
+
+# Function to get age from the Born row of the information table on Wikipedia
+# However, this function uses a different approach to obtain the age
+getAgeFromElse <- function(name){
+    wiki_url <- paste("https://en.wikipedia.org/wiki/", gsub(" ", "_", name), sep = "")
+    
+    age <- tryCatch({
+        name_table <- read_html(wiki_url) %>%
+            html_table()
+        name_table <- name_table[[1]]
+        
+        age_row <- name_table[name_table[1] == "Born",]
+        age_text <- as.character(age_row[1,2]) %>%
+            str_extract("age[:space:]+[:digit:]{1,3}") %>%
+            str_extract("[:digit:]{1,3}")
+        age <- as.integer(age_text)
+    }, error = function(e){
+        message(cat("Failed for", name))
+        return(NA_integer_)
+    })
+    
+    message(cat(name, ": ", age, sep = ""))
+    return(age)
+}
+
+
+# Applying the functions defined above to extract age
+# However, no method is able to extract all ages, so we
+# apply them sequentially to try and find values that have
+# not been found.
+# The ages that were not found by any any of the functions
+# are written to a csv file.
+
+for (i in c(2019, 2021)){
+    tables[[i]]$`Age` <- numeric(dim(tables[[i]])[1])
+    for (j in 1:dim(tables[[i]])[1]){
+        age <- getAgeFromBorn(tables[[i]]$`Name`[j])
+        if (length(age) <= 0){
+            tables[[i]]$`Age`[j] <- NA_integer_
+            message(cat("Failed for", tables[[i]]$Name[j], "\n"))
+        } else {
+            tables[[i]]$`Age`[j] <- age
+        }
+    }
+    
+    remaining <- is.na(tables[[i]])
+    for (j in 1:dim(tables[[i]])[1]){
+        if (remaining[j]){
+            age <- getAgeFromDied(tables[[i]]$`Name`[j])
+            if (length(age) <= 0){
+                message(cat("Failed for", tables[[i]]$Name[j], "\n"))
+            } else {
+                tables[[i]]$`Age`[j] <- age
+            }
+        }
+    }
+    
+    remaining <- is.na(tables[[i]]$`Age`)
+    for (j in 1:dim(tables[[i]])[1]){
+        if (remaining[j]){
+            age <- getAgeFromElse(tables[[i]]$`Name`[j])
+            if (length(age) <= 0){
+                message(cat("Failed for", tables[[i]]$Name[j], "\n"))
+            } else {
+                tables[[i]]$`Age`[j] <- age
+            }
+        }
+    }
+    
+    
+    out <- tables[[i]] %>%
+        select(
+            `Name`,
+            `Age`
+        )
+    out$Rank <- 1:500
+    out <- out %>%
+        relocate(`Rank`, .before = `Name`)
+    
+    out <- out[is.na(out$Age), ]
+    
+    filename <- paste("./../Data/noAge", as.character(i), ".csv", sep = "")
+    write.csv(out, file = filename)
+}
+
+```
+
+The above code snippet tries to update all the age values. However, ages of
+some billionaires could not be scraped due to discrepancies between their
+name and the Wikipedia page's name. We save such names in a *csv* file for
+each year.
+
+
+### Updating Missing Ages
+
+The missing values are updated in the *csv* files. Then, the following code
+block adds the missing ages to the tibble:
+
+``` {r}
+for (i in c(2019, 2021)){
+    filename <- paste("./../Data/noAge", as.character(i), "Updated.csv", sep = "")
+    
+    no_age <- read.csv(filename)
+    rownames(no_age) <- no_age$Name
+    no_age$X <- NULL
+    no_age$Rank <- NULL
+    no_age$Name <- NULL
+    
+    for (j in 1:dim(tables[[i]])[1]){
+        if (is.na(tables[[i]][j, "Age"])){
+            tables[[i]][j, "Age"] <- no_age[tables[[i]]$`Name`[j], "Age"]
+        }
+    }
+}
+```
+
+
+### Categorising Source of Income
+
+We had to map the sources of income of the years 2011 to 2018 into 14 categories
+as in the 2019 and 2021 data.
+
+A *csv* file is created containing unique sources of income listed in the data
+and the required entries are added:
+
+``` {r}
+raw_sources <- vector(mode = "character")
+for (i in 2011:2018){
+    raw_sources <- unique(c(raw_sources, tables[[i]]$`Source of Wealth`))
+}
+
+map_sources <- data.frame(
+    `initial` = raw_sources,
+    `final` = vector(mode = "character", length = length(raw_sources))
+)
+
+write.csv(map_sources, "./../Data/map_categories.csv")
+```
+
+
+After mapping the categories in the csv file, we replace the sources of income
+with the categories under which the source of income lies:
+
+``` {r}
+map_categories <- read.csv("./../Data/map_categories_updated.csv")
+
+for (i in 2011:2018){
+    tables[[i]]$`Source of Wealth` <- map_categories[ tables[[i]]$`Source of Wealth` ,]
+}
+```
+
+
+### Setting the Data Types of each Column
+
+Each column is given a relevant data type:
+
+``` {r}
+# Changing required data types
+for (i in c(2011:2019, 2021)){
+    tables[[i]]$Age <- as.integer(tables[[i]]$Age)
+}
+
+for (i in c(2011:2019, 2021)){
+    tables[[i]]$`Net Worth (in billion $US)` <- as.numeric(tables[[i]]$`Net Worth (in billion $US)`)
+}
+
+for (i in c(2011:2019, 2021)){
+    tables[[i]]$`Source of Wealth` <- factor(tables[[i]]$`Source of Wealth`)
+}
+
+for (i in c(2011:2019, 2021)){
+    tables[[i]]$Citizenship <- factor(tables[[i]]$Citizenship)
+}
+```
+
+
+### Final Data
+
+```{r}
+head(tables[[2019]])
+```
+
+## ISO Country Codes
+
+The file `2014_world_gdp_with_codes.csv` was obtained from \href{https://raw.githubusercontent.com/plotly/datasets/master/2014_world_gdp_with_codes.csv}{here}.
+We find the list of countries in our data and store their 3-digit ISO codes in a
+data frame.
+
+``` {r}
+# Reading the csv file
+all_codes <- read.csv("./../Data/2014_world_gdp_with_codes.csv") %>%
+    select(`COUNTRY`, `Code` = `CODE`)
+
+# Getting list of all countries in our data
+countries <- vector(mode = "character")
+for (i in c(2011:2019, 2021)){
+    countries <- unique(c(countries, tables[[i]]$Citizenship))
+}
+
+# Sorting alphabetically
+countries <- sort(countries)
+
+# Merging the data
+country_codes <- data.frame(Country = countries)
+country_codes <- merge(
+    x = country_codes,
+    y = all_codes,
+    by.x = "Country",
+    by.y = "COUNTRY",
+    all.x = TRUE
+)
+```
+
+This data frame has some codes set to <NA>, we see the values by seeing the
+values that did not match with any country name in the original csv file.
+
+``` {r}
+countries[!(countries %in% intersect(countries, all_codes$COUNTRY))]
+```
+
+Entering the missing values.
+
+```{r}
+country_codes[country_codes$Country == "Korea, Republic of", 2] <- "PRK"
+country_codes[country_codes$Country == "Russian Federation", 2] <- "RUS"
+country_codes[country_codes$Country == "South Korea", 2] <- "KOR"
+country_codes[country_codes$Country == "Viet Nam", 2] <- "VNM"
+```
+
+
+## Saving the Data
+
+We finally save the data as `finalData.RData`.
+
+``` {r}
+save("tables", "country_codes", file = "./../Data/finaldata.RData")
+```
